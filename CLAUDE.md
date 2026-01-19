@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains TradingView Pine Script strategies for backtesting Opening Range Breakout (ORB) trading strategies with Fair Value Gap (FVG) entries. The strategies are designed for 5-minute charts and implement risk management with partial take-profits and breakeven stops.
 
+**Terminology**: "Gap" and "FVG" (Fair Value Gap) are used interchangeably throughout this codebase.
+
 ## Strategy Versions
 
 - **orb_v1.pine**: Original ORB strategy (Pine Script v6) - has execution issues with entry timing

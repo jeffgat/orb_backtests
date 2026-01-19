@@ -77,6 +77,10 @@ var float shortEntryStored  = na
 var float shortQtyStored    = na
 var bool  shortBEActive      = false
 
+// track bar index when setup was armed (to require retest on future bar)
+var int longSetupBar  = na
+var int shortSetupBar = na
+
 // ----------------------------------------------------------------------------------------
 // Reset on new day
 // ----------------------------------------------------------------------------------------
@@ -103,6 +107,8 @@ if newDay
     shortEntryStored := na
     shortQtyStored := na
     shortBEActive := false
+    longSetupBar := na
+    shortSetupBar := na
 
     strategy.cancel("L")
     strategy.cancel("S")
@@ -189,6 +195,7 @@ if canArmSetup and not longFirstFvgFound and longBreak and longFVG
             longQtyStored    := qty
             longSetupActive  := true
             longFirstFvgFound := true
+            longSetupBar     := bar_index  // track when setup armed for retest requirement
 
 // SHORT setup arm
 if canArmSetup and not shortFirstFvgFound and shortBreak and shortFVG
@@ -209,6 +216,7 @@ if canArmSetup and not shortFirstFvgFound and shortBreak and shortFVG
             shortQtyStored    := qty
             shortSetupActive  := true
             shortFirstFvgFound := true
+            shortSetupBar     := bar_index  // track when setup armed for retest requirement
 
 // ----------------------------------------------------------------------------------------
 // Maintain orders and manage breakeven logic
@@ -219,24 +227,33 @@ if strategy.position_size > 0 and high >= longHalfwayStored
 if strategy.position_size < 0 and low <= shortHalfwayStored
     shortBEActive := true
 
-// entry orders (only before trade filled)
+// entry orders (only before trade filled, and only AFTER setup bar for true retest)
 if is5m and inRTH and inEntryWin and not hasTradedToday
-    if longSetupActive
+    // only place entry order on bars AFTER the FVG formed (require price to revisit)
+    if longSetupActive and bar_index > longSetupBar
         strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryPrice)
-    if shortSetupActive
+    if shortSetupActive and bar_index > shortSetupBar
         strategy.entry("S", strategy.short, qty=shortQtyStored, limit=shortEntryPrice)
 
-// exit orders (maintained while position is open or setup is active)
-canMaintainExits = is5m and inRTH and (strategy.position_size != 0 or (not hasTradedToday and (longSetupActive or shortSetupActive)))
-
-if canMaintainExits
-    if strategy.position_size > 0 or longSetupActive
+// exit orders (maintained while position is open or setup is active, only after setup bar for pending)
+if is5m and inRTH
+    // when position is open, always maintain exits
+    if strategy.position_size > 0
         strategy.exit("L-P", from_entry="L", qty_percent=50, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
         strategy.exit("L-F", from_entry="L", stop=longBEActive ? longEntryPrice : longStopStored, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
-    
-    if strategy.position_size < 0 or shortSetupActive
+
+    if strategy.position_size < 0
         strategy.exit("S-P", from_entry="S", qty_percent=50, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
         strategy.exit("S-F", from_entry="S", stop=shortBEActive ? shortEntryPrice : shortStopStored, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
+
+    // for pending orders (no position), only maintain exits after setup bar
+    if strategy.position_size == 0 and not hasTradedToday
+        if longSetupActive and bar_index > longSetupBar
+            strategy.exit("L-P", from_entry="L", qty_percent=50, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+            strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
+        if shortSetupActive and bar_index > shortSetupBar
+            strategy.exit("S-P", from_entry="S", qty_percent=50, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
+            strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
 
 // ----------------------------------------------------------------------------------------
 // Cancel pending orders after cutoff and after RTH
@@ -248,6 +265,8 @@ if afterCutoff
     shortSetupActive := false
     longEntryStored := na
     shortEntryStored := na
+    longSetupBar := na
+    shortSetupBar := na
 
 if not inRTH
     strategy.cancel("L")
@@ -256,6 +275,8 @@ if not inRTH
     shortSetupActive := false
     longEntryStored := na
     shortEntryStored := na
+    longSetupBar := na
+    shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
 // Flat at 15:50 (close same day)

@@ -95,6 +95,10 @@ var float shortHalfQty      = na
 var bool  shortBEActive      = false
 var float shortFilledEntry = na  // actual fill price for hard stop calc
 
+// track bar index when setup was armed (to require retest on future bar)
+var int longSetupBar  = na
+var int shortSetupBar = na
+
 // ----------------------------------------------------------------------------------------
 // Reset on new day
 // ----------------------------------------------------------------------------------------
@@ -125,6 +129,8 @@ if newDay
     shortHalfQty := na
     shortBEActive := false
     shortFilledEntry := na
+    longSetupBar := na
+    shortSetupBar := na
 
     strategy.cancel("L")
     strategy.cancel("S")
@@ -220,6 +226,7 @@ if canArmSetup and not longFirstFvgFound and longFVG
             longHalfQty      := halfQty
             longSetupActive  := true
             longFirstFvgFound := true
+            longSetupBar     := bar_index  // track when setup armed for retest requirement
 
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
@@ -245,6 +252,7 @@ if canArmSetup and not shortFirstFvgFound and shortFVG
             shortHalfQty      := halfQty
             shortSetupActive  := true
             shortFirstFvgFound := true
+            shortSetupBar     := bar_index  // track when setup armed for retest requirement
 
 // ----------------------------------------------------------------------------------------
 // track actual entry fill price for hard stop calculation
@@ -268,12 +276,13 @@ if strategy.position_size < 0
         shortBEActive := true
 
 // ----------------------------------------------------------------------------------------
-// entry orders (only before trade filled)
+// entry orders (only before trade filled, and only AFTER setup bar for true retest)
 // ----------------------------------------------------------------------------------------
 if is5m and inRTH and inEntryWin and not hasTradedToday
-    if longSetupActive
+    // only place entry order on bars AFTER the FVG formed (require price to revisit)
+    if longSetupActive and bar_index > longSetupBar
         strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryPrice)
-    if shortSetupActive
+    if shortSetupActive and bar_index > shortSetupBar
         strategy.entry("S", strategy.short, qty=shortQtyStored, limit=shortEntryPrice)
 
 // ----------------------------------------------------------------------------------------
@@ -298,12 +307,12 @@ if strategy.position_size < 0
     finalStop = shortBEActive ? beStopPrice : shortStopStored
     strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
-// also maintain exits for pending orders (before fill)
+// also maintain exits for pending orders (before fill, only after setup bar)
 if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
-    if longSetupActive
+    if longSetupActive and bar_index > longSetupBar
         strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
         strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
-    if shortSetupActive
+    if shortSetupActive and bar_index > shortSetupBar
         strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
         strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
 
@@ -317,6 +326,8 @@ if afterCutoff
     shortSetupActive := false
     longEntryStored := na
     shortEntryStored := na
+    longSetupBar := na
+    shortSetupBar := na
 
 if not inRTH
     strategy.cancel("L")
@@ -325,6 +336,8 @@ if not inRTH
     shortSetupActive := false
     longEntryStored := na
     shortEntryStored := na
+    longSetupBar := na
+    shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
 // flat at 15:50 - close any remaining position at market
