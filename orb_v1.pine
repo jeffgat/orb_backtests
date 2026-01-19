@@ -1,0 +1,274 @@
+//@version=6
+strategy(
+     title              = "ORB V1",
+     overlay            = true,
+     initial_capital    = 100000,
+     pyramiding         = 0,
+     margin_long        = 0,
+     margin_short       = 0,
+     commission_type    = strategy.commission.cash_per_contract,
+     commission_value   = 0.05
+)
+
+// ----------------------------------------------------------------------------------------
+// Inputs
+// ----------------------------------------------------------------------------------------
+riskUsd      = input.float(1000, "Risk per trade ($)", step=50)
+rr           = input.float(2.0, "Reward/Risk", step=0.25)
+tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9)
+
+sessionRTH   = input.session("0930-1600", "Regular session (ny time)")
+orbSession   = input.session("0930-0945", "Opening range window (ny time)")
+entryWindow  = input.session("0930-1200", "Entry window (no entries after, ny time)")
+flatWindow   = input.session("1550-1600", "Flat window (close at 15:50, ny time)")
+
+// If your CFD needs integer sizing, keep these at 1.
+// If you need micro sizing, set minQty=0.1 and qtyStep=0.1, etc.
+minQty       = input.float(1.0, "Min Qty", step=0.1)
+qtyStep      = input.float(1.0, "Qty Step", step=0.1)
+
+// ----------------------------------------------------------------------------------------
+// Safety: intended for 5m charts
+// ----------------------------------------------------------------------------------------
+is5m = timeframe.isintraday and timeframe.multiplier == 5
+
+// ----------------------------------------------------------------------------------------
+// Session filters (exchange-time consistent)
+// ----------------------------------------------------------------------------------------
+inRTH      = not na(time(timeframe.period, sessionRTH, "America/New_York"))
+inORB      = not na(time(timeframe.period, orbSession, "America/New_York"))
+inEntryWin = not na(time(timeframe.period, entryWindow, "America/New_York"))
+inFlatWin  = not na(time(timeframe.period, flatWindow, "America/New_York"))
+
+afterCutoff = inRTH and not inEntryWin
+
+// New trading day
+newDay = ta.change(time("D")) != 0
+
+// ----------------------------------------------------------------------------------------
+// ORB state
+// ----------------------------------------------------------------------------------------
+var float orbHigh  = na
+var float orbLow   = na
+var bool  orbReady = false
+
+// 1 FILLED trade per day
+var bool hasTradedToday = false
+var int closedTradesAtDayStart = 0
+
+// Persistent setup states (so retest fills are not missed)
+var bool  longSetupActive  = false
+var bool  shortSetupActive = false
+var bool  longFirstFvgFound  = false
+var bool  shortFirstFvgFound = false
+
+// Store anchored risk params from the breakout/breakdown candle
+var float longStopStored   = na
+var float longTargetStored = na
+var float longHalfwayStored = na
+var float longEntryStored  = na
+var float longQtyStored    = na
+var bool  longBEActive      = false
+
+var float shortStopStored   = na
+var float shortTargetStored = na
+var float shortHalfwayStored = na
+var float shortEntryStored  = na
+var float shortQtyStored    = na
+var bool  shortBEActive      = false
+
+// ----------------------------------------------------------------------------------------
+// Reset on new day
+// ----------------------------------------------------------------------------------------
+if newDay
+    orbHigh := na
+    orbLow  := na
+    orbReady := false
+    hasTradedToday := false
+    closedTradesAtDayStart := strategy.closedtrades
+
+    longSetupActive := false
+    shortSetupActive := false
+    longFirstFvgFound := false
+    shortFirstFvgFound := false
+    longStopStored := na
+    longTargetStored := na
+    longHalfwayStored := na
+    longEntryStored := na
+    longQtyStored := na
+    longBEActive := false
+    shortStopStored := na
+    shortTargetStored := na
+    shortHalfwayStored := na
+    shortEntryStored := na
+    shortQtyStored := na
+    shortBEActive := false
+
+    strategy.cancel("L")
+    strategy.cancel("S")
+
+// ----------------------------------------------------------------------------------------
+// Detect any trade occurred today (robust, incl. same-bar round trips)
+// ----------------------------------------------------------------------------------------
+tradeHappenedToday =
+     (strategy.opentrades > 0) or (strategy.closedtrades > closedTradesAtDayStart)
+
+if tradeHappenedToday and not hasTradedToday
+    hasTradedToday := true
+    longSetupActive := false
+    shortSetupActive := false
+    longFirstFvgFound := true
+    shortFirstFvgFound := true
+    longEntryStored := na
+    shortEntryStored := na
+    strategy.cancel("L")
+    strategy.cancel("S")
+
+// ----------------------------------------------------------------------------------------
+// Build ORB (09:30–09:45)
+// ----------------------------------------------------------------------------------------
+if inORB and inRTH and is5m
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow  := na(orbLow)  ? low  : math.min(orbLow, low)
+
+// Lock ORB after window ends
+if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(orbLow)
+    orbReady := true
+
+// ----------------------------------------------------------------------------------------
+// Signal definitions
+// ----------------------------------------------------------------------------------------
+longBreak  = orbReady and inRTH and close > orbHigh
+shortBreak = orbReady and inRTH and close < orbLow
+
+// fvg filter vs 2 bars ago (10m on 5m chart) and outside/or crossing orb
+longFvgTop    = low
+longFvgBottom = high[2]
+shortFvgTop   = low[2]
+shortFvgBottom = high
+longFVG  = longFvgBottom < longFvgTop and longFvgTop > orbHigh
+shortFVG = shortFvgBottom < shortFvgTop and shortFvgBottom < orbLow
+
+// entry prices at fvg retest levels
+longEntryPrice  = longEntryStored
+shortEntryPrice = shortEntryStored
+
+// ----------------------------------------------------------------------------------------
+// qty rounding helpers
+// ----------------------------------------------------------------------------------------
+floorToStep(x, step) =>
+    step <= 0 ? x : math.floor(x / step) * step
+
+// ----------------------------------------------------------------------------------------
+// Activate setup on breakout/breakdown candle (store anchored SL/TP/Qty)
+// Only if:
+// - within entry window
+// - no trade filled yet today
+// - flat/no position
+// - no other setup active
+// --------------------
+canArmSetup =
+     is5m and inRTH and inEntryWin and orbReady and not hasTradedToday and strategy.position_size == 0 and not (longSetupActive or shortSetupActive)
+
+// LONG setup arm
+if canArmSetup and not longFirstFvgFound and longBreak and longFVG
+    rawStop = low[1]  // your rule: sl = low of 1-prior candle of breakout candle
+    entry   = longFvgTop
+    stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
+    riskPts = entry - stop
+
+    if riskPts > 0
+        qtyRaw = riskUsd / (riskPts * syminfo.pointvalue)
+        qty    = floorToStep(qtyRaw, qtyStep)
+
+        if qty >= minQty
+            longStopStored   := stop
+            longTargetStored := entry + rr * riskPts
+            longHalfwayStored := entry + (rr * riskPts * tp1Ratio)
+            longEntryStored  := entry
+            longQtyStored    := qty
+            longSetupActive  := true
+            longFirstFvgFound := true
+
+// SHORT setup arm
+if canArmSetup and not shortFirstFvgFound and shortBreak and shortFVG
+    rawStop = high[1] // your rule: sl = high of 1-prior candle of breakdown candle
+    entry   = shortFvgBottom
+    stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
+    riskPts = stop - entry
+
+    if riskPts > 0
+        qtyRaw = riskUsd / (riskPts * syminfo.pointvalue)
+        qty    = floorToStep(qtyRaw, qtyStep)
+
+        if qty >= minQty
+            shortStopStored   := stop
+            shortTargetStored := entry - rr * riskPts
+            shortHalfwayStored := entry - (rr * riskPts * tp1Ratio)
+            shortEntryStored  := entry
+            shortQtyStored    := qty
+            shortSetupActive  := true
+            shortFirstFvgFound := true
+
+// ----------------------------------------------------------------------------------------
+// Maintain orders and manage breakeven logic
+// ----------------------------------------------------------------------------------------
+// update breakeven state if halfway point is reached
+if strategy.position_size > 0 and high >= longHalfwayStored
+    longBEActive := true
+if strategy.position_size < 0 and low <= shortHalfwayStored
+    shortBEActive := true
+
+// entry orders (only before trade filled)
+if is5m and inRTH and inEntryWin and not hasTradedToday
+    if longSetupActive
+        strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryPrice)
+    if shortSetupActive
+        strategy.entry("S", strategy.short, qty=shortQtyStored, limit=shortEntryPrice)
+
+// exit orders (maintained while position is open or setup is active)
+canMaintainExits = is5m and inRTH and (strategy.position_size != 0 or (not hasTradedToday and (longSetupActive or shortSetupActive)))
+
+if canMaintainExits
+    if strategy.position_size > 0 or longSetupActive
+        strategy.exit("L-P", from_entry="L", qty_percent=50, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+        strategy.exit("L-F", from_entry="L", stop=longBEActive ? longEntryPrice : longStopStored, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
+    
+    if strategy.position_size < 0 or shortSetupActive
+        strategy.exit("S-P", from_entry="S", qty_percent=50, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
+        strategy.exit("S-F", from_entry="S", stop=shortBEActive ? shortEntryPrice : shortStopStored, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
+
+// ----------------------------------------------------------------------------------------
+// Cancel pending orders after cutoff and after RTH
+// ----------------------------------------------------------------------------------------
+if afterCutoff
+    strategy.cancel("L")
+    strategy.cancel("S")
+    longSetupActive := false
+    shortSetupActive := false
+    longEntryStored := na
+    shortEntryStored := na
+
+if not inRTH
+    strategy.cancel("L")
+    strategy.cancel("S")
+    longSetupActive := false
+    shortSetupActive := false
+    longEntryStored := na
+    shortEntryStored := na
+
+// ----------------------------------------------------------------------------------------
+// Flat at 15:50 (close same day)
+// Note: on 5m chart this happens at the close of the 15:50 bar.
+// ----------------------------------------------------------------------------------------
+if inRTH and inFlatWin and strategy.position_size != 0
+    strategy.close("L")
+    strategy.close("S")
+
+// ----------------------------------------------------------------------------------------
+// Visuals
+// ----------------------------------------------------------------------------------------
+// Plot ORB lines only until 12:00 (exchange time)
+plotORB = inRTH and inEntryWin
+plot(plotORB ? orbHigh : na, "ORB High", style=plot.style_linebr, linewidth=2, color=color.new(#18b79c, 0))
+plot(plotORB ? orbLow  : na, "ORB Low",  style=plot.style_linebr, linewidth=2, color=color.new(#5d606b, 0))
