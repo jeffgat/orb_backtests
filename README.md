@@ -12,3 +12,7 @@
 ## ideas
 - had a broken ORB entry script outperforming everything so far
 - it was entering a FVG before it formed. so basically when there's a pump candle, it would enter before the 3rd candle to confirm the FVG closed. (prematurely considering it an FVG).
+
+
+## current best performer
+HEAD

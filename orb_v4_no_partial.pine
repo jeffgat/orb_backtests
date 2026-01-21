@@ -1,6 +1,6 @@
 //@version=6
 strategy(
-     title              = "ORB V3",
+     title              = "ORB V4",
      overlay            = true,
      initial_capital    = 100000,
      pyramiding         = 0,
@@ -319,29 +319,23 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 if strategy.position_size > 0
     // use actual fill price for BE stop (not the limit order price)
     beStopPrice = not na(longFilledEntry) ? longFilledEntry : longEntryStored
-    // for partial exit before tp1, use original stop
-    strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    // no partial - full exit at target, BE stop if halfway was reached
     finalStop = longBEActive ? beStopPrice : longStopStored
-    strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
+    strategy.exit("L-X", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp")
 
 if strategy.position_size < 0
     // use actual fill price for BE stop (not the limit order price)
     beStopPrice = not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored
-    // for partial exit before tp1, use original stop
-    strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    // no partial - full exit at target, BE stop if halfway was reached
     finalStop = shortBEActive ? beStopPrice : shortStopStored
-    strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
+    strategy.exit("S-X", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp")
 
 // also maintain exits for pending orders (before fill, only after setup bar)
 if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
     if longSetupActive and bar_index > longSetupBar
-        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-        strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
+        strategy.exit("L-X", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp")
     if shortSetupActive and bar_index > shortSetupBar
-        strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-        strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
+        strategy.exit("S-X", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp")
 
 // ----------------------------------------------------------------------------------------
 // Cancel pending orders after cutoff and after RTH
