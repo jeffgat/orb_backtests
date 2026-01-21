@@ -317,8 +317,8 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 // calculate effective stop based on position size to guarantee max loss = riskUsd
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    // use actual fill price for BE stop (not the limit order price)
-    beStopPrice = not na(longFilledEntry) ? longFilledEntry : longEntryStored
+    // use actual fill price for BE stop, +1 point to cover commission and ensure profit
+    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + 1.0
     // for partial exit before tp1, use original stop
     strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
     // for remaining position, use BE stop if tp1 was hit, otherwise original stop
@@ -326,8 +326,8 @@ if strategy.position_size > 0
     strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    // use actual fill price for BE stop (not the limit order price)
-    beStopPrice = not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored
+    // use actual fill price for BE stop, -1 point to cover commission and ensure profit
+    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - 1.0
     // for partial exit before tp1, use original stop
     strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
     // for remaining position, use BE stop if tp1 was hit, otherwise original stop
