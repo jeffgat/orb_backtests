@@ -17,7 +17,7 @@ strategy(
 // Inputs
 // ----------------------------------------------------------------------------------------
 riskUsd      = input.float(1000, "Risk per trade ($)", step=50)
-rr           = input.float(2.0, "Reward/Risk", step=0.25)
+rr           = input.float(2.5, "Reward/Risk", step=0.25)
 tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9)
 
 sessionRTH   = input.session("0930-1600", "Regular session (ny time)")
