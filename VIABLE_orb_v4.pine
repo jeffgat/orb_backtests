@@ -284,7 +284,7 @@ if strategy.position_size < 0
         shortBEActive := true
 
 // ----------------------------------------------------------------------------------------
-// 30-minute timeout for unfilled limit orders (6 bars on 5m chart)
+// configurable timeout for unfilled limit orders (6 bars on 5m chart)
 // ----------------------------------------------------------------------------------------
 setupTimeoutBars = 40
 
