@@ -30,6 +30,13 @@ flatWindow   = input.session("0645-0700", "Flat window (close at 15:50, ny time)
 minQty       = input.float(1.0, "Min Qty", step=0.1)
 qtyStep      = input.float(1.0, "Qty Step", step=0.1)
 
+// FVG minimum gap size filter (gap must be at least this size to be valid)
+minGapPoints = input.float(2.0, "Min Gap (points)", step=1.0, tooltip="Minimum gap size in points")
+minGapTicks  = input.int(10, "Min Gap (ticks)", step=5, tooltip="Minimum gap size in ticks - uses whichever is larger")
+
+// Breakeven offset (ticks above/below entry to cover commission and ensure small profit)
+beOffsetTicks = input.int(4, "BE Offset (ticks)", step=1, tooltip="Ticks above entry for BE stop to cover commission")
+
 // ----------------------------------------------------------------------------------------
 // Safety: intended for 5m charts
 // ----------------------------------------------------------------------------------------
@@ -84,6 +91,7 @@ var float longEntryStored  = na
 var float longQtyStored    = na
 var float longHalfQty      = na
 var bool  longBEActive      = false
+var bool  longSingleContract = false  // true when qty == minQty (skip TP1, go straight to BE + TP2)
 var float longFilledEntry  = na  // actual fill price for hard stop calc
 
 var float shortStopStored   = na
@@ -93,6 +101,7 @@ var float shortEntryStored  = na
 var float shortQtyStored    = na
 var float shortHalfQty      = na
 var bool  shortBEActive      = false
+var bool  shortSingleContract = false  // true when qty == minQty (skip TP1, go straight to BE + TP2)
 var float shortFilledEntry = na  // actual fill price for hard stop calc
 
 // track bar index when setup was armed (to require retest on future bar)
@@ -120,6 +129,7 @@ if newDay
     longQtyStored := na
     longHalfQty := na
     longBEActive := false
+    longSingleContract := false
     longFilledEntry := na
     shortStopStored := na
     shortTargetStored := na
@@ -128,6 +138,7 @@ if newDay
     shortQtyStored := na
     shortHalfQty := na
     shortBEActive := false
+    shortSingleContract := false
     shortFilledEntry := na
     longSetupBar := na
     shortSetupBar := na
@@ -164,11 +175,9 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
     orbReady := true
 
 // ----------------------------------------------------------------------------------------
-// minimum fvg size requirement:
-// valid gap must be at least 5 points or 20 ticks (whichever is larger)
-minGapPoints = 2.0
-minGapTicks  = 10
-minGap       = math.max(minGapPoints, minGapTicks * syminfo.mintick)
+// minimum fvg size requirement (configurable via inputs)
+// ----------------------------------------------------------------------------------------
+minGap = math.max(minGapPoints, minGapTicks * syminfo.mintick)
 
 // fvg detection using 3-candle pattern (matching test.pine logic):
 // - bar [2] = "before" candle
@@ -189,9 +198,8 @@ shortGapSize = shortFvgTop - shortFvgBottom
 longFVG  = high[2] < low and high[2] < high[1] and low[2] < low and longFvgTop > orbHigh and longGapSize >= minGap
 shortFVG = low[2] > high and low[2] > low[1] and high[2] > high and shortFvgBottom < orbLow and shortGapSize >= minGap
 
-// entry prices at fvg retest levels
-longEntryPrice  = longEntryStored
-shortEntryPrice = shortEntryStored
+// BE offset calculation (beOffsetTicks is configurable via inputs)
+beOffset = beOffsetTicks * syminfo.mintick
 
 // ----------------------------------------------------------------------------------------
 // qty rounding helpers
@@ -213,7 +221,7 @@ canArmSetup =
 // long setup arm
 // fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
 if canArmSetup and not longFirstFvgFound and longFVG
-    // sl = low of the impulse candle (bar [1]) for tighter stop
+    // sl = low of the "before" candle (bar [2]) for wider stop
     rawStop = low[2]
     entry   = longFvgTop  // enter at top of fvg (after candle low)
     stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
@@ -222,8 +230,10 @@ if canArmSetup and not longFirstFvgFound and longFVG
     if riskPts > 0
         qtyRaw = riskUsd / (riskPts * syminfo.pointvalue)
         qty    = floorToStep(qtyRaw, qtyStep)
-        halfQty = floorToStep(qty / 2, qtyStep)
-        halfQty := math.max(halfQty, minQty)  // ensure at least minQty for partial
+        // check if single contract (can't split for partial TP)
+        isSingleContract = qty <= minQty
+        halfQty = isSingleContract ? qty : floorToStep(qty / 2, qtyStep)
+        halfQty := math.max(halfQty, minQty)
 
         if qty >= minQty
             longStopStored   := stop
@@ -232,14 +242,15 @@ if canArmSetup and not longFirstFvgFound and longFVG
             longEntryStored  := entry
             longQtyStored    := qty
             longHalfQty      := halfQty
+            longSingleContract := isSingleContract
             longSetupActive  := true
             longFirstFvgFound := true
-            longSetupBar     := bar_index  // track when setup armed for retest requirement
+            longSetupBar     := bar_index
 
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
 if canArmSetup and not shortFirstFvgFound and shortFVG
-    // sl = high of the impulse candle (bar [1]) for tighter stop
+    // sl = high of the "before" candle (bar [2]) for wider stop
     rawStop = high[2]
     entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
     stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
@@ -248,8 +259,10 @@ if canArmSetup and not shortFirstFvgFound and shortFVG
     if riskPts > 0
         qtyRaw = riskUsd / (riskPts * syminfo.pointvalue)
         qty    = floorToStep(qtyRaw, qtyStep)
-        halfQty = floorToStep(qty / 2, qtyStep)
-        halfQty := math.max(halfQty, minQty)  // ensure at least minQty for partial
+        // check if single contract (can't split for partial TP)
+        isSingleContract = qty <= minQty
+        halfQty = isSingleContract ? qty : floorToStep(qty / 2, qtyStep)
+        halfQty := math.max(halfQty, minQty)
 
         if qty >= minQty
             shortStopStored   := stop
@@ -258,9 +271,10 @@ if canArmSetup and not shortFirstFvgFound and shortFVG
             shortEntryStored  := entry
             shortQtyStored    := qty
             shortHalfQty      := halfQty
+            shortSingleContract := isSingleContract
             shortSetupActive  := true
             shortFirstFvgFound := true
-            shortSetupBar     := bar_index  // track when setup armed for retest requirement
+            shortSetupBar     := bar_index
 
 // ----------------------------------------------------------------------------------------
 // track actual entry fill price for hard stop calculation
@@ -272,35 +286,32 @@ if strategy.position_size < 0 and na(shortFilledEntry)
 
 // ----------------------------------------------------------------------------------------
 // update breakeven state if halfway point is reached
-// also detect if partial exit has occurred (position size reduced from full qty)
+// for single contracts: activate BE when price reaches tp1 level (no partial exit)
+// for multi contracts: also activate when position size drops (partial TP1 fill occurred)
+// note: requires longFilledEntry to be set to distinguish partial TP1 from partial entry fill
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    // be activates when price reaches tp1 level OR when position size drops (partial fill)
-    if high >= longHalfwayStored or (strategy.position_size < longQtyStored and longQtyStored > 0)
-        longBEActive := true
+    if longSingleContract
+        // single contract: BE activates when price reaches tp1 level
+        if not na(longHalfwayStored) and high >= longHalfwayStored
+            longBEActive := true
+    else
+        // multi contract: BE activates when price reaches tp1 level OR partial TP1 fill occurred
+        // check longFilledEntry is set to ensure full entry filled before detecting position reduction as TP1
+        positionReduced = strategy.position_size < longQtyStored and longQtyStored > 0 and not na(longFilledEntry)
+        if (not na(longHalfwayStored) and high >= longHalfwayStored) or positionReduced
+            longBEActive := true
 if strategy.position_size < 0
-    // be activates when price reaches tp1 level OR when position size drops (partial fill)
-    if low <= shortHalfwayStored or (math.abs(strategy.position_size) < shortQtyStored and shortQtyStored > 0)
-        shortBEActive := true
-
-// ----------------------------------------------------------------------------------------
-// configurable timeout for unfilled limit orders (6 bars on 5m chart)
-// ----------------------------------------------------------------------------------------
-setupTimeoutBars = 12
-
-if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
-    // cancel long setup if 30 minutes passed without fill
-    if longSetupActive and bar_index >= longSetupBar + setupTimeoutBars
-        strategy.cancel("L")
-        longSetupActive := false
-        longEntryStored := na
-        longSetupBar := na
-    // cancel short setup if 30 minutes passed without fill
-    if shortSetupActive and bar_index >= shortSetupBar + setupTimeoutBars
-        strategy.cancel("S")
-        shortSetupActive := false
-        shortEntryStored := na
-        shortSetupBar := na
+    if shortSingleContract
+        // single contract: BE activates when price reaches tp1 level
+        if not na(shortHalfwayStored) and low <= shortHalfwayStored
+            shortBEActive := true
+    else
+        // multi contract: BE activates when price reaches tp1 level OR partial TP1 fill occurred
+        // check shortFilledEntry is set to ensure full entry filled before detecting position reduction as TP1
+        positionReduced = math.abs(strategy.position_size) < shortQtyStored and shortQtyStored > 0 and not na(shortFilledEntry)
+        if (not na(shortHalfwayStored) and low <= shortHalfwayStored) or positionReduced
+            shortBEActive := true
 
 // ----------------------------------------------------------------------------------------
 // entry orders (only before trade filled, and only AFTER setup bar for true retest)
@@ -308,40 +319,40 @@ if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
 if is5m and inRTH and inEntryWin and not hasTradedToday
     // only place entry order on bars AFTER the FVG formed (require price to revisit)
     if longSetupActive and bar_index > longSetupBar
-        strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryPrice)
+        strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryStored)
     if shortSetupActive and bar_index > shortSetupBar
-        strategy.entry("S", strategy.short, qty=shortQtyStored, limit=shortEntryPrice)
+        strategy.entry("S", strategy.short, qty=shortQtyStored, limit=shortEntryStored)
 
 // ----------------------------------------------------------------------------------------
 // exit orders - unified approach with hard dollar stop
-// calculate effective stop based on position size to guarantee max loss = riskUsd
+// single contract: skip TP1, use BE stop after tp1 level reached, exit at TP2
+// multi contract: partial exit at TP1, then BE stop for remainder
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    // use actual fill price for BE stop, +1 point to cover commission and ensure profit
-    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + 1.0
-    // for partial exit before tp1, use original stop
-    strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    // use actual fill price for BE stop, +offset to cover commission and ensure profit
+    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + beOffset
     finalStop = longBEActive ? beStopPrice : longStopStored
-    strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
+
+    if longSingleContract
+        // single contract: no partial TP, just BE stop after tp1 level + full TP2
+        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
+    else
+        // multi contract: partial exit at TP1, then BE for remainder
+        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    // use actual fill price for BE stop, -1 point to cover commission and ensure profit
-    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - 1.0
-    // for partial exit before tp1, use original stop
-    strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    // use actual fill price for BE stop, -offset to cover commission and ensure profit
+    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - beOffset
     finalStop = shortBEActive ? beStopPrice : shortStopStored
-    strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
-// also maintain exits for pending orders (before fill, only after setup bar)
-if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
-    if longSetupActive and bar_index > longSetupBar
-        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-        strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
-    if shortSetupActive and bar_index > shortSetupBar
+    if shortSingleContract
+        // single contract: no partial TP, just BE stop after tp1 level + full TP2
+        strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
+    else
+        // multi contract: partial exit at TP1, then BE for remainder
         strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-        strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
+        strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
 
 // ----------------------------------------------------------------------------------------
 // Cancel pending orders after cutoff and after RTH
