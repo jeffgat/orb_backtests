@@ -1,13 +1,13 @@
 //@version=6
 strategy(
-     title              = "ORB V4",
+     title              = "ORB V4 - BTC Perps",
      overlay            = true,
      initial_capital    = 100000,
      pyramiding         = 0,
      margin_long        = 0,
      margin_short       = 0,
-     commission_type    = strategy.commission.cash_per_contract,
-     commission_value   = 0.05,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.05,  // 0.05% per trade (typical crypto taker fee)
      process_orders_on_close = true,
      use_bar_magnifier  = true,
      fill_orders_on_standard_ohlc = false
@@ -20,15 +20,16 @@ riskUsd      = input.float(1000, "Risk per trade ($)", step=50)
 rr           = input.float(2.5, "Reward/Risk", step=0.25)
 tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9)
 
+// BTC trades 24/7 - using NY equity hours for session structure
+// Adjust these if you want different session windows (e.g., Asian or London sessions)
 sessionRTH   = input.session("0930-1600", "Regular session (ny time)")
 orbSession   = input.session("0930-0945", "Opening range window (ny time)")
 entryWindow  = input.session("0930-1300", "Entry window (no entries after, ny time)")
 flatWindow   = input.session("1550-1600", "Flat window (close at 15:50, ny time)")
 
-// If your CFD needs integer sizing, keep these at 1.
-// If you need micro sizing, set minQty=0.1 and qtyStep=0.1, etc.
-minQty       = input.float(1.0, "Min Qty", step=0.1)
-qtyStep      = input.float(1.0, "Qty Step", step=0.1)
+// BTC perps allow fractional sizing (0.001 BTC increments typical)
+minQty       = input.float(0.001, "Min Qty", step=0.001)
+qtyStep      = input.float(0.001, "Qty Step", step=0.001)
 
 // ----------------------------------------------------------------------------------------
 // Safety: intended for 5m charts
@@ -165,10 +166,9 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
 
 // ----------------------------------------------------------------------------------------
 // minimum fvg size requirement:
-// valid gap must be at least 5 points or 20 ticks (whichever is larger)
-minGapPoints = 10.0
-minGapTicks  = 40
-minGap       = math.max(minGapPoints, minGapTicks * syminfo.mintick)
+// for BTC perps, use percentage of price (0.1% = $90 at $90k BTC)
+minGapPct    = input.float(0.1, "Min Gap Size (%)", step=0.05, minval=0.01) / 100
+minGap       = close * minGapPct
 
 // fvg detection using 3-candle pattern (matching test.pine logic):
 // - bar [2] = "before" candle
@@ -316,9 +316,12 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 // exit orders - unified approach with hard dollar stop
 // calculate effective stop based on position size to guarantee max loss = riskUsd
 // ----------------------------------------------------------------------------------------
+// BE offset: 0.01% of price to cover commission and ensure profit (~$9 at $90k BTC)
+beOffset = close * 0.0001
+
 if strategy.position_size > 0
-    // use actual fill price for BE stop, +1 point to cover commission and ensure profit
-    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + 1.0
+    // use actual fill price for BE stop, + offset to cover commission and ensure profit
+    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + beOffset
     // for partial exit before tp1, use original stop
     strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
     // for remaining position, use BE stop if tp1 was hit, otherwise original stop
@@ -326,8 +329,8 @@ if strategy.position_size > 0
     strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    // use actual fill price for BE stop, -1 point to cover commission and ensure profit
-    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - 1.0
+    // use actual fill price for BE stop, - offset to cover commission and ensure profit
+    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - beOffset
     // for partial exit before tp1, use original stop
     strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
     // for remaining position, use BE stop if tp1 was hit, otherwise original stop

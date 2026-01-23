@@ -1,6 +1,6 @@
 //@version=6
 strategy(
-     title              = "ORB V4 ASIA",
+     title              = "ORB V4",
      overlay            = true,
      initial_capital    = 100000,
      pyramiding         = 0,
@@ -17,14 +17,13 @@ strategy(
 // Inputs
 // ----------------------------------------------------------------------------------------
 riskUsd      = input.float(1000, "Risk per trade ($)", step=50)
-rr           = input.float(2.0, "Reward/Risk", step=0.25)
+rr           = input.float(2.5, "Reward/Risk", step=0.25)
 tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9)
 
-tz          = "Asia/Tokyo"
-sessionRTH  = input.session("0900-1500", "Regular session (jst)")
-orbSession  = input.session("0900-0930", "Opening range window (jst)")
-entryWindow = input.session("0930-1230", "Entry window (no entries after 12:30 jst)")
-flatWindow  = input.session("1450-1500", "Flat window (close at 14:50, jst)")
+sessionRTH   = input.session("0400-1200", "Regular session (ny time)")
+orbSession   = input.session("0400-0415", "Opening range window (ny time)")
+entryWindow  = input.session("0415-0715", "Entry window (no entries after, ny time)")
+flatWindow   = input.session("1150-1200", "Flat window (close at 15:50, ny time)")
 
 // If your CFD needs integer sizing, keep these at 1.
 // If you need micro sizing, set minQty=0.1 and qtyStep=0.1, etc.
@@ -40,22 +39,22 @@ barClosed = barstate.isconfirmed
 // ----------------------------------------------------------------------------------------
 // Session filters (exchange-time consistent)
 // ----------------------------------------------------------------------------------------
-inRTH      = not na(time(timeframe.period, sessionRTH, tz))
-inORB      = not na(time(timeframe.period, orbSession, tz))
-inEntryWin = not na(time(timeframe.period, entryWindow, tz))
-inFlatWin  = not na(time(timeframe.period, flatWindow, tz))
+inRTH      = not na(time(timeframe.period, sessionRTH, "America/New_York"))
+inORB      = not na(time(timeframe.period, orbSession, "America/New_York"))
+inEntryWin = not na(time(timeframe.period, entryWindow, "America/New_York"))
+inFlatWin  = not na(time(timeframe.period, flatWindow, "America/New_York"))
 
 afterCutoff = inRTH and not inEntryWin
 
 // new trading day
-newDay = ta.change(dayofmonth(time, tz)) != 0 or ta.change(month(time, tz)) != 0 or ta.change(year(time, tz)) != 0
+newDay = ta.change(time("D")) != 0
 
 // ----------------------------------------------------------------------------------------
 // exclude specific problematic dates
 // ----------------------------------------------------------------------------------------
-currentMonth = month(time, tz)
-currentDay   = dayofmonth(time, tz)
-currentYear  = year(time, tz)
+currentMonth = month(time, "America/New_York")
+currentDay   = dayofmonth(time, "America/New_York")
+currentYear  = year(time, "America/New_York")
 
 // dec 18, 2024 - exclude due to data issue
 isExcludedDate = currentYear == 2024 and currentMonth == 12 and currentDay == 18
@@ -154,7 +153,7 @@ if tradeHappenedToday and not hasTradedToday
     strategy.cancel("S")
 
 // ----------------------------------------------------------------------------------------
-// Build ORB (09:00–09:30 jst)
+// Build ORB (09:30–09:45)
 // ----------------------------------------------------------------------------------------
 if inORB and inRTH and is5m
     orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
@@ -167,8 +166,8 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
 // ----------------------------------------------------------------------------------------
 // minimum fvg size requirement:
 // valid gap must be at least 5 points or 20 ticks (whichever is larger)
-minGapPoints = 10.0
-minGapTicks  = 40
+minGapPoints = 15.0
+minGapTicks  = 60
 minGap       = math.max(minGapPoints, minGapTicks * syminfo.mintick)
 
 // fvg detection using 3-candle pattern (matching test.pine logic):
@@ -214,8 +213,8 @@ canArmSetup =
 // long setup arm
 // fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
 if canArmSetup and not longFirstFvgFound and longFVG
-    // sl = low of the "before" candle (bar [2]) for wider stop
-    rawStop = low[2]
+    // sl = low of the impulse candle (bar [1]) for tighter stop
+    rawStop = low[1]
     entry   = longFvgTop  // enter at top of fvg (after candle low)
     stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
     riskPts = entry - stop
@@ -240,8 +239,8 @@ if canArmSetup and not longFirstFvgFound and longFVG
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
 if canArmSetup and not shortFirstFvgFound and shortFVG
-    // sl = high of the "before" candle (bar [2]) for wider stop
-    rawStop = high[2]
+    // sl = high of the impulse candle (bar [1]) for tighter stop
+    rawStop = high[1]
     entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
     stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
     riskPts = stop - entry
@@ -318,8 +317,8 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 // calculate effective stop based on position size to guarantee max loss = riskUsd
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    // use actual fill price for BE stop (not the limit order price)
-    beStopPrice = not na(longFilledEntry) ? longFilledEntry : longEntryStored
+    // use actual fill price for BE stop, +1 point to cover commission and ensure profit
+    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + 1.0
     // for partial exit before tp1, use original stop
     strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
     // for remaining position, use BE stop if tp1 was hit, otherwise original stop
@@ -327,8 +326,8 @@ if strategy.position_size > 0
     strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    // use actual fill price for BE stop (not the limit order price)
-    beStopPrice = not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored
+    // use actual fill price for BE stop, -1 point to cover commission and ensure profit
+    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - 1.0
     // for partial exit before tp1, use original stop
     strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
     // for remaining position, use BE stop if tp1 was hit, otherwise original stop
@@ -368,7 +367,7 @@ if not inRTH
     shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
-// flat at 14:50 jst - close any remaining position at market
+// flat at 15:50 - close any remaining position at market
 // this should rarely happen since stops/targets should have filled
 // ----------------------------------------------------------------------------------------
 if inFlatWin and strategy.position_size != 0
@@ -380,7 +379,7 @@ if inFlatWin and strategy.position_size != 0
 // ----------------------------------------------------------------------------------------
 // Visuals
 // ----------------------------------------------------------------------------------------
-// Plot ORB lines only during entry window (jst)
+// Plot ORB lines only until 12:00 (exchange time)
 plotORB = inRTH and inEntryWin
 plot(plotORB ? orbHigh : na, "ORB High", style=plot.style_linebr, linewidth=2, color=color.new(#18b79c, 0))
 plot(plotORB ? orbLow  : na, "ORB Low",  style=plot.style_linebr, linewidth=2, color=color.new(#5d606b, 0))

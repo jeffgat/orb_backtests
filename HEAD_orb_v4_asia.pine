@@ -20,10 +20,10 @@ riskUsd      = input.float(1000, "Risk per trade ($)", step=50)
 rr           = input.float(2.5, "Reward/Risk", step=0.25)
 tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9)
 
-sessionRTH   = input.session("0930-1600", "Regular session (ny time)")
-orbSession   = input.session("0930-0945", "Opening range window (ny time)")
-entryWindow  = input.session("0930-1300", "Entry window (no entries after, ny time)")
-flatWindow   = input.session("1550-1600", "Flat window (close at 15:50, ny time)")
+sessionRTH   = input.session("1800-0700", "Regular session (ny time)")
+orbSession   = input.session("2000-2015", "Opening range window (ny time)")
+entryWindow  = input.session("2015-2315", "Entry window (no entries after, ny time)")
+flatWindow   = input.session("0645-0700", "Flat window (close at 15:50, ny time)")
 
 // If your CFD needs integer sizing, keep these at 1.
 // If you need micro sizing, set minQty=0.1 and qtyStep=0.1, etc.
@@ -166,8 +166,8 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
 // ----------------------------------------------------------------------------------------
 // minimum fvg size requirement:
 // valid gap must be at least 5 points or 20 ticks (whichever is larger)
-minGapPoints = 10.0
-minGapTicks  = 40
+minGapPoints = 2.0
+minGapTicks  = 10
 minGap       = math.max(minGapPoints, minGapTicks * syminfo.mintick)
 
 // fvg detection using 3-candle pattern (matching test.pine logic):
@@ -213,7 +213,7 @@ canArmSetup =
 // long setup arm
 // fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
 if canArmSetup and not longFirstFvgFound and longFVG
-    // sl = low of the "before" candle (bar [2]) for wider stop
+    // sl = low of the impulse candle (bar [1]) for tighter stop
     rawStop = low[2]
     entry   = longFvgTop  // enter at top of fvg (after candle low)
     stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
@@ -239,7 +239,7 @@ if canArmSetup and not longFirstFvgFound and longFVG
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
 if canArmSetup and not shortFirstFvgFound and shortFVG
-    // sl = high of the "before" candle (bar [2]) for wider stop
+    // sl = high of the impulse candle (bar [1]) for tighter stop
     rawStop = high[2]
     entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
     stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
@@ -286,7 +286,7 @@ if strategy.position_size < 0
 // ----------------------------------------------------------------------------------------
 // 30-minute timeout for unfilled limit orders (6 bars on 5m chart)
 // ----------------------------------------------------------------------------------------
-setupTimeoutBars = 40
+setupTimeoutBars = 12
 
 if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
     // cancel long setup if 30 minutes passed without fill
