@@ -33,9 +33,10 @@ asiaSession   = input.session("2000-0000", "Asia KZ (NY time)")
 londonSession = input.session("0200-0500", "London KZ (NY time)")
 
 // Strategy Settings
-maxBarsAfterSweep = input.int(30, "Max bars after sweep", minval=1, maxval=50, tooltip="Setup expires if no entry within this many bars")
+maxBarsAfterSweep = input.int(24, "Max bars after sweep", minval=1, maxval=50, tooltip="Setup expires if no entry within this many bars")
 minGapPts         = input.float(5.0, "Min Gap Size (pts)", step=1.0, minval=0, tooltip="Minimum gap size in points to qualify as valid")
 gapWindowBars     = input.int(10, "Gap Window (bars)", minval=1, maxval=50, tooltip="Only use gaps formed within this many bars before/after the sweep candle")
+maxTradesPerDay   = input.int(3, "Max Trades Per Day", minval=1, maxval=10, tooltip="Maximum number of trades allowed per day")
 
 // Sweep Type Toggles
 useAsiaHighSweeps   = input.bool(true, "Use Asia High Sweeps", tooltip="Enable short setups from Asia high sweeps")
@@ -44,6 +45,9 @@ useLondonHighSweeps = input.bool(true, "Use London High Sweeps", tooltip="Enable
 useLondonLowSweeps  = input.bool(true, "Use London Low Sweeps", tooltip="Enable long setups from London low sweeps")
 usePDHSweeps        = input.bool(true, "Use PDH Sweeps", tooltip="Enable short setups from previous day high sweeps")
 usePDLSweeps        = input.bool(true, "Use PDL Sweeps", tooltip="Enable long setups from previous day low sweeps")
+use1HSwingHighSweeps = input.bool(false, "Use 1H Swing High Sweeps", tooltip="Enable short setups from 1H swing high sweeps")
+use1HSwingLowSweeps  = input.bool(false, "Use 1H Swing Low Sweeps", tooltip="Enable long setups from 1H swing low sweeps")
+swingLength          = input.int(48, "Swing Pivot Length", minval=2, maxval=50, tooltip="Lookback/lookforward bars for swing pivot detection on 1H timeframe")
 
 // ----------------------------------------------------------------------------------------
 // Timeframe check (works on any intraday timeframe)
@@ -76,82 +80,95 @@ afterCutoff = not inEntryWin
 newDay = ta.change(time("D")) != 0
 
 // ----------------------------------------------------------------------------------------
-// Killzone Level Tracking (most recent killzone only)
+// Killzone Level Tracking (Asia and London tracked separately)
 // ----------------------------------------------------------------------------------------
-// Temporary tracking during session
-var float tempKzHigh = na
-var float tempKzLow  = na
-var int   tempKzHighBar = na  // Bar index where high was made
-var int   tempKzLowBar  = na  // Bar index where low was made
-var bool  inKzSession = false
+// Temporary tracking during Asia session
+var float tempAsiaHigh = na
+var float tempAsiaLow  = na
+var int   tempAsiaHighBar = na
+var int   tempAsiaLowBar  = na
 
-// Active killzone levels (locked after session ends)
-var float kzHigh = na
-var float kzLow  = na
-var int   kzHighBar = na  // Bar index where high was made
-var int   kzLowBar  = na  // Bar index where low was made
-var string kzSource = na  // "asia" or "london"
+// Temporary tracking during London session
+var float tempLondonHigh = na
+var float tempLondonLow  = na
+var int   tempLondonHighBar = na
+var int   tempLondonLowBar  = na
 
-// Sweep and trade tracking
-var bool kzHighSwept  = false
-var bool kzLowSwept   = false
-var bool kzHighTraded = false
-var bool kzLowTraded  = false
+// Asia killzone levels (locked after session ends)
+var float asiaHigh = na
+var float asiaLow  = na
+var int   asiaHighBar = na
+var int   asiaLowBar  = na
+var bool  asiaHighSwept  = false
+var bool  asiaLowSwept   = false
+var bool  asiaHighTraded = false
+var bool  asiaLowTraded  = false
+var int   asiaHighSweepBar = na
+var int   asiaLowSweepBar = na
 
+// London killzone levels (locked after session ends)
+var float londonHigh = na
+var float londonLow  = na
+var int   londonHighBar = na
+var int   londonLowBar  = na
+var bool  londonHighSwept  = false
+var bool  londonLowSwept   = false
+var bool  londonHighTraded = false
+var bool  londonLowTraded  = false
+var int   londonHighSweepBar = na
+var int   londonLowSweepBar = na
 
 // Track H/L during Asia session
 if inAsia
-    inKzSession := true
-    if na(tempKzHigh) or high > tempKzHigh
-        tempKzHigh := high
-        tempKzHighBar := bar_index
-    if na(tempKzLow) or low < tempKzLow
-        tempKzLow := low
-        tempKzLowBar := bar_index
+    if na(tempAsiaHigh) or high > tempAsiaHigh
+        tempAsiaHigh := high
+        tempAsiaHighBar := bar_index
+    if na(tempAsiaLow) or low < tempAsiaLow
+        tempAsiaLow := low
+        tempAsiaLowBar := bar_index
 
 // Track H/L during London session
 if inLondon
-    inKzSession := true
-    if na(tempKzHigh) or high > tempKzHigh
-        tempKzHigh := high
-        tempKzHighBar := bar_index
-    if na(tempKzLow) or low < tempKzLow
-        tempKzLow := low
-        tempKzLowBar := bar_index
+    if na(tempLondonHigh) or high > tempLondonHigh
+        tempLondonHigh := high
+        tempLondonHighBar := bar_index
+    if na(tempLondonLow) or low < tempLondonLow
+        tempLondonLow := low
+        tempLondonLowBar := bar_index
 
 // Lock Asia levels when session ends
-if asiaJustEnded and not na(tempKzHigh) and not na(tempKzLow)
-    kzHigh := tempKzHigh
-    kzLow  := tempKzLow
-    kzHighBar := tempKzHighBar
-    kzLowBar := tempKzLowBar
-    kzSource := "asia"
-    kzHighSwept := false
-    kzLowSwept := false
-    kzHighTraded := false
-    kzLowTraded := false
-    tempKzHigh := na
-    tempKzLow := na
-    tempKzHighBar := na
-    tempKzLowBar := na
-    inKzSession := false
+if asiaJustEnded and not na(tempAsiaHigh) and not na(tempAsiaLow)
+    asiaHigh := tempAsiaHigh
+    asiaLow  := tempAsiaLow
+    asiaHighBar := tempAsiaHighBar
+    asiaLowBar := tempAsiaLowBar
+    asiaHighSwept := false
+    asiaLowSwept := false
+    asiaHighTraded := false
+    asiaLowTraded := false
+    asiaHighSweepBar := na
+    asiaLowSweepBar := na
+    tempAsiaHigh := na
+    tempAsiaLow := na
+    tempAsiaHighBar := na
+    tempAsiaLowBar := na
 
-// Lock London levels when session ends (replaces Asia)
-if londonJustEnded and not na(tempKzHigh) and not na(tempKzLow)
-    kzHigh := tempKzHigh
-    kzLow  := tempKzLow
-    kzHighBar := tempKzHighBar
-    kzLowBar := tempKzLowBar
-    kzSource := "london"
-    kzHighSwept := false
-    kzLowSwept := false
-    kzHighTraded := false
-    kzLowTraded := false
-    tempKzHigh := na
-    tempKzLow := na
-    tempKzHighBar := na
-    tempKzLowBar := na
-    inKzSession := false
+// Lock London levels when session ends
+if londonJustEnded and not na(tempLondonHigh) and not na(tempLondonLow)
+    londonHigh := tempLondonHigh
+    londonLow  := tempLondonLow
+    londonHighBar := tempLondonHighBar
+    londonLowBar := tempLondonLowBar
+    londonHighSwept := false
+    londonLowSwept := false
+    londonHighTraded := false
+    londonLowTraded := false
+    londonHighSweepBar := na
+    londonLowSweepBar := na
+    tempLondonHigh := na
+    tempLondonLow := na
+    tempLondonHighBar := na
+    tempLondonLowBar := na
 
 // ----------------------------------------------------------------------------------------
 // Previous Day High/Low Tracking
@@ -165,6 +182,46 @@ var bool  pdlSwept = false
 var bool  pdhTraded = false
 var bool  pdlTraded = false
 var int   pdhSourceTime = na  // Timestamp when PDH/PDL was set (to ensure we only use previous day)
+
+// ----------------------------------------------------------------------------------------
+// 1H Swing High/Low Detection (using HTF security call)
+// ----------------------------------------------------------------------------------------
+// Get 1H pivot highs and lows using request.security
+[htfPivotHigh, htfPivotLow, htfHigh, htfLow] = request.security(syminfo.tickerid, "60", [ta.pivothigh(high, swingLength, swingLength), ta.pivotlow(low, swingLength, swingLength), high, low])
+
+// Track the most recent 1H swing high/low levels
+var float swingHigh1H = na
+var float swingLow1H = na
+var int   swingHigh1HBar = na
+var int   swingLow1HBar = na
+var bool  swingHigh1HSwept = false
+var bool  swingLow1HSwept = false
+var bool  swingHigh1HTraded = false
+var bool  swingLow1HTraded = false
+var int   swingHigh1HSweepBar = na
+var int   swingLow1HSweepBar = na
+
+// Flags to detect new swing pivots for visualization
+newSwingHighDetected = false
+newSwingLowDetected = false
+
+// Update swing high when a new pivot is detected
+if not na(htfPivotHigh) and (na(swingHigh1H) or htfPivotHigh != swingHigh1H)
+    swingHigh1H := htfPivotHigh
+    swingHigh1HBar := bar_index - swingLength  // Pivot is confirmed swingLength bars ago
+    swingHigh1HSwept := false
+    swingHigh1HTraded := false
+    swingHigh1HSweepBar := na
+    newSwingHighDetected := true
+
+// Update swing low when a new pivot is detected
+if not na(htfPivotLow) and (na(swingLow1H) or htfPivotLow != swingLow1H)
+    swingLow1H := htfPivotLow
+    swingLow1HBar := bar_index - swingLength  // Pivot is confirmed swingLength bars ago
+    swingLow1HSwept := false
+    swingLow1HTraded := false
+    swingLow1HSweepBar := na
+    newSwingLowDetected := true
 
 // Track current day's high/low
 var float currentDayHigh = na
@@ -212,13 +269,12 @@ isPdhFromPreviousDay = not na(daysSincePdh) and daysSincePdh >= 0 and daysSinceP
 var bool  waitingForGap       = false
 var bool  waitingForInversion = false
 var string sweepType          = na      // "bullish" (for long after low sweep) or "bearish" (for short after high sweep)
-var string sweepSource        = na      // "kzHigh", "kzLow", "pdh", "pdl"
+var string sweepSource        = na      // "asiaHigh", "asiaLow", "londonHigh", "londonLow", "pdh", "pdl", "1hSwingHigh", "1hSwingLow"
 var int   sweepBar            = na
 var int   barsAfterSweep      = 0
+var int   tradesToday         = 0       // Counter for trades taken today
 
 // Track actual sweep bar indices (when price first trades through level)
-var int kzHighSweepBar = na
-var int kzLowSweepBar = na
 var int pdhSweepBar = na
 var int pdlSweepBar = na
 
@@ -256,31 +312,55 @@ var float shortFilledEntry    = na
 // Daily Reset
 // ----------------------------------------------------------------------------------------
 if newDay
-    // Reset killzone levels
-    kzHigh := na
-    kzLow := na
-    kzHighBar := na
-    kzLowBar := na
-    kzSource := na
-    kzHighSwept := false
-    kzLowSwept := false
-    kzHighTraded := false
-    kzLowTraded := false
-    tempKzHigh := na
-    tempKzLow := na
-    tempKzHighBar := na
-    tempKzLowBar := na
-    inKzSession := false
+    // Reset daily trade counter
+    tradesToday := 0
+
+    // Reset Asia killzone levels
+    asiaHigh := na
+    asiaLow := na
+    asiaHighBar := na
+    asiaLowBar := na
+    asiaHighSwept := false
+    asiaLowSwept := false
+    asiaHighTraded := false
+    asiaLowTraded := false
+    asiaHighSweepBar := na
+    asiaLowSweepBar := na
+    tempAsiaHigh := na
+    tempAsiaLow := na
+    tempAsiaHighBar := na
+    tempAsiaLowBar := na
+
+    // Reset London killzone levels
+    londonHigh := na
+    londonLow := na
+    londonHighBar := na
+    londonLowBar := na
+    londonHighSwept := false
+    londonLowSwept := false
+    londonHighTraded := false
+    londonLowTraded := false
+    londonHighSweepBar := na
+    londonLowSweepBar := na
+    tempLondonHigh := na
+    tempLondonLow := na
+    tempLondonHighBar := na
+    tempLondonLowBar := na
 
     // Note: PDH/PDL are updated in the PDH/PDL tracking section above
     // Only reset the swept/traded flags here (levels are set from previous day)
     // pdhSwept, pdlSwept, pdhTraded, pdlTraded are reset in the PDH/PDL section
 
     // Reset sweep bar tracking
-    kzHighSweepBar := na
-    kzLowSweepBar := na
     pdhSweepBar := na
     pdlSweepBar := na
+    swingHigh1HSweepBar := na
+    swingLow1HSweepBar := na
+
+    // Reset 1H swing traded flags (allow trading same level on new day)
+    // Note: swingHigh1H/swingLow1H levels persist - only updated when new pivots form
+    swingHigh1HTraded := false
+    swingLow1HTraded := false
 
     // Reset setup state
     waitingForGap := false
@@ -327,35 +407,46 @@ if newDay
 // Detect when levels are actually swept (anytime, not just entry window)
 // This is used for visualization and timing validation
 if barClosed and isIntraday
-    if not na(kzHigh) and not kzHighSwept and high > kzHigh
-        kzHighSwept := true
-        kzHighSweepBar := bar_index
-    if not na(kzLow) and not kzLowSwept and low < kzLow
-        kzLowSwept := true
-        kzLowSweepBar := bar_index
+    // Asia sweeps
+    if not na(asiaHigh) and not asiaHighSwept and high > asiaHigh
+        asiaHighSwept := true
+        asiaHighSweepBar := bar_index
+    if not na(asiaLow) and not asiaLowSwept and low < asiaLow
+        asiaLowSwept := true
+        asiaLowSweepBar := bar_index
+    // London sweeps
+    if not na(londonHigh) and not londonHighSwept and high > londonHigh
+        londonHighSwept := true
+        londonHighSweepBar := bar_index
+    if not na(londonLow) and not londonLowSwept and low < londonLow
+        londonLowSwept := true
+        londonLowSweepBar := bar_index
+    // PDH/PDL sweeps
     if not na(pdh) and not pdhSwept and high > pdh
         pdhSwept := true
         pdhSweepBar := bar_index
     if not na(pdl) and not pdlSwept and low < pdl
         pdlSwept := true
         pdlSweepBar := bar_index
+    // 1H Swing sweeps
+    if not na(swingHigh1H) and not swingHigh1HSwept and high > swingHigh1H
+        swingHigh1HSwept := true
+        swingHigh1HSweepBar := bar_index
+    if not na(swingLow1H) and not swingLow1HSwept and low < swingLow1H
+        swingLow1HSwept := true
+        swingLow1HSweepBar := bar_index
 
-// Only start setups during entry window when not already in a setup
-canDetectSweepBase = isIntraday and barClosed and inEntryWin and strategy.position_size == 0 and not waitingForGap and not waitingForInversion
+// Only start setups during entry window when not already in a setup and under daily trade limit
+canDetectSweepBase = isIntraday and barClosed and inEntryWin and strategy.position_size == 0 and not waitingForGap and not waitingForInversion and tradesToday < maxTradesPerDay
 
-// Killzone level sweeps - check if sweep happened recently enough (within gapWindowBars)
-canDetectKzSweep = canDetectSweepBase and not na(kzHigh) and not na(kzLow)
-
-// KZ High sweep -> bearish setup (looking for short)
-// Only valid if swept AND the sweep bar is within the gap window from current bar
-// Check toggle based on kzSource (asia or london)
-kzHighToggleEnabled = (kzSource == "asia" and useAsiaHighSweeps) or (kzSource == "london" and useLondonHighSweeps)
-if canDetectKzSweep and kzHighSwept and not kzHighTraded and not na(kzHighSweepBar) and (bar_index - kzHighSweepBar) <= gapWindowBars and kzHighToggleEnabled
-    kzHighTraded := true  // Mark as traded to prevent re-entry
+// Asia High sweep -> bearish setup (looking for short)
+canDetectAsiaSweep = canDetectSweepBase and not na(asiaHigh) and not na(asiaLow)
+if canDetectAsiaSweep and asiaHighSwept and not asiaHighTraded and not na(asiaHighSweepBar) and (bar_index - asiaHighSweepBar) <= gapWindowBars and useAsiaHighSweeps
+    asiaHighTraded := true  // Mark as traded to prevent re-entry
     sweepType := "bearish"
-    sweepSource := "kzHigh"
-    sweepBar := kzHighSweepBar  // Use actual sweep bar, not current bar
-    barsAfterSweep := bar_index - kzHighSweepBar  // Account for bars already passed
+    sweepSource := "asiaHigh"
+    sweepBar := asiaHighSweepBar  // Use actual sweep bar, not current bar
+    barsAfterSweep := bar_index - asiaHighSweepBar  // Account for bars already passed
     waitingForGap := true
     // Reset any prior gap data
     gapTop := na
@@ -363,15 +454,42 @@ if canDetectKzSweep and kzHighSwept and not kzHighTraded and not na(kzHighSweepB
     gapIsBullish := false
     gapBar := na
 
-// KZ Low sweep -> bullish setup (looking for long)
-// Check toggle based on kzSource (asia or london)
-kzLowToggleEnabled = (kzSource == "asia" and useAsiaLowSweeps) or (kzSource == "london" and useLondonLowSweeps)
-if canDetectKzSweep and kzLowSwept and not kzLowTraded and not na(kzLowSweepBar) and (bar_index - kzLowSweepBar) <= gapWindowBars and kzLowToggleEnabled
-    kzLowTraded := true  // Mark as traded to prevent re-entry
+// Asia Low sweep -> bullish setup (looking for long)
+if canDetectAsiaSweep and asiaLowSwept and not asiaLowTraded and not na(asiaLowSweepBar) and (bar_index - asiaLowSweepBar) <= gapWindowBars and useAsiaLowSweeps
+    asiaLowTraded := true  // Mark as traded to prevent re-entry
     sweepType := "bullish"
-    sweepSource := "kzLow"
-    sweepBar := kzLowSweepBar  // Use actual sweep bar, not current bar
-    barsAfterSweep := bar_index - kzLowSweepBar  // Account for bars already passed
+    sweepSource := "asiaLow"
+    sweepBar := asiaLowSweepBar  // Use actual sweep bar, not current bar
+    barsAfterSweep := bar_index - asiaLowSweepBar  // Account for bars already passed
+    waitingForGap := true
+    // Reset any prior gap data
+    gapTop := na
+    gapBottom := na
+    gapIsBullish := false
+    gapBar := na
+
+// London High sweep -> bearish setup (looking for short)
+canDetectLondonSweep = canDetectSweepBase and not na(londonHigh) and not na(londonLow)
+if canDetectLondonSweep and londonHighSwept and not londonHighTraded and not na(londonHighSweepBar) and (bar_index - londonHighSweepBar) <= gapWindowBars and useLondonHighSweeps
+    londonHighTraded := true  // Mark as traded to prevent re-entry
+    sweepType := "bearish"
+    sweepSource := "londonHigh"
+    sweepBar := londonHighSweepBar  // Use actual sweep bar, not current bar
+    barsAfterSweep := bar_index - londonHighSweepBar  // Account for bars already passed
+    waitingForGap := true
+    // Reset any prior gap data
+    gapTop := na
+    gapBottom := na
+    gapIsBullish := false
+    gapBar := na
+
+// London Low sweep -> bullish setup (looking for long)
+if canDetectLondonSweep and londonLowSwept and not londonLowTraded and not na(londonLowSweepBar) and (bar_index - londonLowSweepBar) <= gapWindowBars and useLondonLowSweeps
+    londonLowTraded := true  // Mark as traded to prevent re-entry
+    sweepType := "bullish"
+    sweepSource := "londonLow"
+    sweepBar := londonLowSweepBar  // Use actual sweep bar, not current bar
+    barsAfterSweep := bar_index - londonLowSweepBar  // Account for bars already passed
     waitingForGap := true
     // Reset any prior gap data
     gapTop := na
@@ -403,6 +521,37 @@ if canDetectPdSweep and pdlSwept and not pdlTraded and not na(pdlSweepBar) and (
     sweepSource := "pdl"
     sweepBar := pdlSweepBar  // Use actual sweep bar, not current bar
     barsAfterSweep := bar_index - pdlSweepBar  // Account for bars already passed
+    waitingForGap := true
+    // Reset any prior gap data
+    gapTop := na
+    gapBottom := na
+    gapIsBullish := false
+    gapBar := na
+
+// 1H Swing High/Low sweeps
+canDetect1HSwingSweep = canDetectSweepBase and not na(swingHigh1H) and not na(swingLow1H)
+
+// 1H Swing High sweep -> bearish setup (looking for short)
+if canDetect1HSwingSweep and swingHigh1HSwept and not swingHigh1HTraded and not na(swingHigh1HSweepBar) and (bar_index - swingHigh1HSweepBar) <= gapWindowBars and use1HSwingHighSweeps
+    swingHigh1HTraded := true  // Mark as traded to prevent re-entry
+    sweepType := "bearish"
+    sweepSource := "1hSwingHigh"
+    sweepBar := swingHigh1HSweepBar  // Use actual sweep bar, not current bar
+    barsAfterSweep := bar_index - swingHigh1HSweepBar  // Account for bars already passed
+    waitingForGap := true
+    // Reset any prior gap data
+    gapTop := na
+    gapBottom := na
+    gapIsBullish := false
+    gapBar := na
+
+// 1H Swing Low sweep -> bullish setup (looking for long)
+if canDetect1HSwingSweep and swingLow1HSwept and not swingLow1HTraded and not na(swingLow1HSweepBar) and (bar_index - swingLow1HSweepBar) <= gapWindowBars and use1HSwingLowSweeps
+    swingLow1HTraded := true  // Mark as traded to prevent re-entry
+    sweepType := "bullish"
+    sweepSource := "1hSwingLow"
+    sweepBar := swingLow1HSweepBar  // Use actual sweep bar, not current bar
+    barsAfterSweep := bar_index - swingLow1HSweepBar  // Account for bars already passed
     waitingForGap := true
     // Reset any prior gap data
     gapTop := na
@@ -487,7 +636,8 @@ beOffset = beOffsetTicks * syminfo.mintick
 // Inversion Detection & Entry
 // ----------------------------------------------------------------------------------------
 // Also check barsAfterSweep to ensure we don't enter after setup should have expired
-if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.position_size == 0 and barsAfterSweep < maxBarsAfterSweep
+// Also check daily trade limit
+if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.position_size == 0 and barsAfterSweep < maxBarsAfterSweep and tradesToday < maxTradesPerDay
     // Bullish Gap inversion (SHORT entry): candle closes BELOW the bullish gap
     if gapIsBullish and close < gapBottom
         // Entry calculation
@@ -514,12 +664,17 @@ if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.
                 shortFilledEntry := na
 
                 strategy.entry("S", strategy.short, qty=qty)
+                tradesToday += 1  // Increment daily trade counter
 
                 // Mark the swept level as traded
-                if sweepSource == "kzHigh"
-                    kzHighTraded := true
+                if sweepSource == "asiaHigh"
+                    asiaHighTraded := true
+                else if sweepSource == "londonHigh"
+                    londonHighTraded := true
                 else if sweepSource == "pdh"
                     pdhTraded := true
+                else if sweepSource == "1hSwingHigh"
+                    swingHigh1HTraded := true
                 waitingForInversion := false
                 sweepType := na
                 sweepSource := na
@@ -553,12 +708,17 @@ if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.
                 longFilledEntry := na
 
                 strategy.entry("L", strategy.long, qty=qty)
+                tradesToday += 1  // Increment daily trade counter
 
                 // Mark the swept level as traded
-                if sweepSource == "kzLow"
-                    kzLowTraded := true
+                if sweepSource == "asiaLow"
+                    asiaLowTraded := true
+                else if sweepSource == "londonLow"
+                    londonLowTraded := true
                 else if sweepSource == "pdl"
                     pdlTraded := true
+                else if sweepSource == "1hSwingLow"
+                    swingLow1HTraded := true
                 waitingForInversion := false
                 sweepType := na
                 sweepSource := na
@@ -693,21 +853,49 @@ addKzVisuals(int highBar, float highPrice, int lowBar, float lowPrice, string so
         array.pop(kzLowValids)
 
 // Detect when Asia session ends and create lines
-if asiaJustEnded and not na(kzHigh) and not na(kzLow)
-    addKzVisuals(kzHighBar, kzHigh, kzLowBar, kzLow, "asia", kzHighSwept, kzLowSwept)
+if asiaJustEnded and not na(asiaHigh) and not na(asiaLow)
+    addKzVisuals(asiaHighBar, asiaHigh, asiaLowBar, asiaLow, "asia", asiaHighSwept, asiaLowSwept)
 
 // Detect when London session ends and create lines
-if londonJustEnded and not na(kzHigh) and not na(kzLow)
-    addKzVisuals(kzHighBar, kzHigh, kzLowBar, kzLow, "ldn", kzHighSwept, kzLowSwept)
+if londonJustEnded and not na(londonHigh) and not na(londonLow)
+    addKzVisuals(londonHighBar, londonHigh, londonLowBar, londonLow, "ldn", londonHighSwept, londonLowSwept)
 
 // Create PDH/PDL lines on new day when levels are locked
 if newDay and not na(pdh) and not na(pdl)
     addKzVisuals(pdhBar, pdh, pdlBar, pdl, "pd", pdhSwept, pdlSwept)
 
+// Create 1H swing high line when new pivot high is detected
+if newSwingHighDetected and not na(swingHigh1H) and not na(swingHigh1HBar)
+    hiLine = line.new(swingHigh1HBar, swingHigh1H, bar_index, swingHigh1H, xloc=xloc.bar_index,
+         style=line.style_solid, color=color.orange, width=1)
+    hiLabel = label.new(swingHigh1HBar, swingHigh1H, "1H.H",
+         xloc=xloc.bar_index, style=label.style_label_down, color=transparent, textcolor=color.orange, size=size.small)
+    array.unshift(kzHighLines, hiLine)
+    array.unshift(kzHighLabels, hiLabel)
+    array.unshift(kzHighValids, true)
+    if array.size(kzHighLines) > maxSessions
+        line.delete(array.pop(kzHighLines))
+        label.delete(array.pop(kzHighLabels))
+        array.pop(kzHighValids)
+
+// Create 1H swing low line when new pivot low is detected
+if newSwingLowDetected and not na(swingLow1H) and not na(swingLow1HBar)
+    loLine = line.new(swingLow1HBar, swingLow1H, bar_index, swingLow1H, xloc=xloc.bar_index,
+         style=line.style_solid, color=color.blue, width=1)
+    loLabel = label.new(swingLow1HBar, swingLow1H, "1H.L",
+         xloc=xloc.bar_index, style=label.style_label_up, color=transparent, textcolor=color.blue, size=size.small)
+    array.unshift(kzLowLines, loLine)
+    array.unshift(kzLowLabels, loLabel)
+    array.unshift(kzLowValids, true)
+    if array.size(kzLowLines) > maxSessions
+        line.delete(array.pop(kzLowLines))
+        label.delete(array.pop(kzLowLabels))
+        array.pop(kzLowValids)
+
 // Update all lines - extend valid ones, check for mitigation
+// Process high lines
 if array.size(kzHighLines) > 0
     for i = 0 to array.size(kzHighLines) - 1
-        // High lines
         if array.get(kzHighValids, i)
             hiLine = array.get(kzHighLines, i)
             hiPrice = line.get_y1(hiLine)
@@ -719,7 +907,9 @@ if array.size(kzHighLines) > 0
             else
                 line.set_x2(hiLine, bar_index)
 
-        // Low lines
+// Process low lines separately (arrays may have different sizes due to independent 1H swing detection)
+if array.size(kzLowLines) > 0
+    for i = 0 to array.size(kzLowLines) - 1
         if array.get(kzLowValids, i)
             loLine = array.get(kzLowLines, i)
             loPrice = line.get_y1(loLine)

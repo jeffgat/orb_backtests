@@ -20,10 +20,10 @@ riskUsd      = input.float(1000, "Risk per trade ($)", step=50)
 rr           = input.float(2.5, "Reward/Risk", step=0.25)
 tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9)
 
-sessionRTH   = input.session("1800-0700", "Regular session (ny time)")
-orbSession   = input.session("2000-2015", "Opening range window (ny time)")
-entryWindow  = input.session("2015-2315", "Entry window (no entries after, ny time)")
-flatWindow   = input.session("0645-0700", "Flat window (close at 15:50, ny time)")
+sessionRTH   = input.session("0930-1600", "Regular session (ny time)")
+orbSession   = input.session("0930-0945", "Opening range window (ny time)")
+entryWindow  = input.session("0945-1300", "Entry window (no entries after, ny time)")
+flatWindow   = input.session("1550-1600", "Flat window (close at 15:50, ny time)")
 
 // If your CFD needs integer sizing, keep these at 1.
 // If you need micro sizing, set minQty=0.1 and qtyStep=0.1, etc.
@@ -31,13 +31,18 @@ minQty       = input.float(1.0, "Min Qty", step=0.1)
 qtyStep      = input.float(1.0, "Qty Step", step=0.1)
 
 // FVG gap size filter (gap must be within this range to be valid)
-minGapPoints = input.float(1.5, "Min Gap (points)", step=1.0, tooltip="Minimum gap size in points")
-minGapTicks  = input.int(6, "Min Gap (ticks)", step=5, tooltip="Minimum gap size in ticks - uses whichever is larger")
-maxGapPoints = input.float(50.0, "Max Gap (points)", step=1.0, tooltip="Maximum gap size in points (0 = no limit)")
-maxGapTicks  = input.int(200, "Max Gap (ticks)", step=5, tooltip="Maximum gap size in ticks (0 = no limit) - uses whichever is smaller when both set")
+minGapPoints = input.float(10.0, "Min Gap (points)", step=1.0, tooltip="Minimum gap size in points")
+minGapTicks  = input.int(40, "Min Gap (ticks)", step=5, tooltip="Minimum gap size in ticks - uses whichever is larger")
+maxGapPoints = input.float(100.0, "Max Gap (points)", step=1.0, tooltip="Maximum gap size in points (0 = no limit)")
+maxGapTicks  = input.int(400, "Max Gap (ticks)", step=5, tooltip="Maximum gap size in ticks (0 = no limit) - uses whichever is smaller when both set")
 
 // Breakeven offset (ticks above/below entry to cover commission and ensure small profit)
 beOffsetTicks = input.int(4, "BE Offset (ticks)", step=1, tooltip="Ticks above entry for BE stop to cover commission")
+
+// Sweep invalidation
+sweepInvalidationBars = input.int(12, "Sweep Invalidation Bars", minval=1, maxval=50, tooltip="If a high/low is swept within this many bars before a long/short entry, invalidate it")
+asiaSession   = input.session("2000-0000", "Asia KZ (NY time)", group="Sweep Invalidation")
+londonSession = input.session("0200-0500", "London KZ (NY time)", group="Sweep Invalidation")
 
 // ----------------------------------------------------------------------------------------
 // Safety: intended for 5m charts
@@ -57,6 +62,124 @@ afterCutoff = inRTH and not inEntryWin
 
 // new trading day
 newDay = ta.change(time("D")) != 0
+
+// ----------------------------------------------------------------------------------------
+// Killzone Session Detection
+// ----------------------------------------------------------------------------------------
+tz = "America/New_York"
+
+inAsia      = not na(time(timeframe.period, asiaSession, tz))
+inAsiaPrev  = not na(time(timeframe.period, asiaSession, tz)[1])
+asiaJustEnded = not inAsia and inAsiaPrev
+
+inLondon      = not na(time(timeframe.period, londonSession, tz))
+inLondonPrev  = not na(time(timeframe.period, londonSession, tz)[1])
+londonJustEnded = not inLondon and inLondonPrev
+
+// ----------------------------------------------------------------------------------------
+// Killzone Level Tracking
+// ----------------------------------------------------------------------------------------
+var float tempAsiaHigh = na
+var float tempAsiaLow  = na
+var float tempLondonHigh = na
+var float tempLondonLow  = na
+
+var float asiaHigh = na
+var float asiaLow  = na
+var float londonHigh = na
+var float londonLow  = na
+
+// PDH/PDL
+var float pdh = na
+var float pdl = na
+var float currentDayHigh = na
+var float currentDayLow  = na
+
+// Sweep bar tracking (bar_index when each level was swept)
+var int asiaHighSweepBar   = na
+var int asiaLowSweepBar    = na
+var int londonHighSweepBar = na
+var int londonLowSweepBar  = na
+var int pdhSweepBar        = na
+var int pdlSweepBar        = na
+
+// Track H/L during Asia session
+if inAsia
+    if na(tempAsiaHigh) or high > tempAsiaHigh
+        tempAsiaHigh := high
+    if na(tempAsiaLow) or low < tempAsiaLow
+        tempAsiaLow := low
+
+// Track H/L during London session
+if inLondon
+    if na(tempLondonHigh) or high > tempLondonHigh
+        tempLondonHigh := high
+    if na(tempLondonLow) or low < tempLondonLow
+        tempLondonLow := low
+
+// Lock Asia levels when session ends
+if asiaJustEnded and not na(tempAsiaHigh) and not na(tempAsiaLow)
+    asiaHigh := tempAsiaHigh
+    asiaLow  := tempAsiaLow
+    asiaHighSweepBar := na
+    asiaLowSweepBar  := na
+    tempAsiaHigh := na
+    tempAsiaLow  := na
+
+// Lock London levels when session ends
+if londonJustEnded and not na(tempLondonHigh) and not na(tempLondonLow)
+    londonHigh := tempLondonHigh
+    londonLow  := tempLondonLow
+    londonHighSweepBar := na
+    londonLowSweepBar  := na
+    tempLondonHigh := na
+    tempLondonLow  := na
+
+// Track current day H/L for PDH/PDL
+if newDay
+    pdh := currentDayHigh
+    pdl := currentDayLow
+    pdhSweepBar := na
+    pdlSweepBar := na
+    currentDayHigh := high
+    currentDayLow  := low
+else
+    if na(currentDayHigh) or high > currentDayHigh
+        currentDayHigh := high
+    if na(currentDayLow) or low < currentDayLow
+        currentDayLow := low
+
+// ----------------------------------------------------------------------------------------
+// Sweep Detection (record bar_index when level is swept)
+// ----------------------------------------------------------------------------------------
+if barClosed and is5m
+    // Asia sweeps
+    if not na(asiaHigh) and na(asiaHighSweepBar) and high > asiaHigh
+        asiaHighSweepBar := bar_index
+    if not na(asiaLow) and na(asiaLowSweepBar) and low < asiaLow
+        asiaLowSweepBar := bar_index
+    // London sweeps
+    if not na(londonHigh) and na(londonHighSweepBar) and high > londonHigh
+        londonHighSweepBar := bar_index
+    if not na(londonLow) and na(londonLowSweepBar) and low < londonLow
+        londonLowSweepBar := bar_index
+    // PDH/PDL sweeps
+    if not na(pdh) and na(pdhSweepBar) and high > pdh
+        pdhSweepBar := bar_index
+    if not na(pdl) and na(pdlSweepBar) and low < pdl
+        pdlSweepBar := bar_index
+
+// Helper: check if any HIGH was swept within N bars of the current bar
+recentHighSwept(barsBack) =>
+    (not na(asiaHighSweepBar) and (bar_index - asiaHighSweepBar) <= barsBack) or
+     (not na(londonHighSweepBar) and (bar_index - londonHighSweepBar) <= barsBack) or
+     (not na(pdhSweepBar) and (bar_index - pdhSweepBar) <= barsBack)
+
+// Helper: check if any LOW was swept within N bars of the current bar
+recentLowSwept(barsBack) =>
+    (not na(asiaLowSweepBar) and (bar_index - asiaLowSweepBar) <= barsBack) or
+     (not na(londonLowSweepBar) and (bar_index - londonLowSweepBar) <= barsBack) or
+     (not na(pdlSweepBar) and (bar_index - pdlSweepBar) <= barsBack)
 
 // ----------------------------------------------------------------------------------------
 // exclude specific problematic dates
@@ -119,6 +242,22 @@ if newDay
     orbReady := false
     hasTradedToday := false
     closedTradesAtDayStart := strategy.closedtrades
+
+    // Reset sweep tracking
+    asiaHigh := na
+    asiaLow  := na
+    asiaHighSweepBar := na
+    asiaLowSweepBar  := na
+    tempAsiaHigh := na
+    tempAsiaLow  := na
+    londonHigh := na
+    londonLow  := na
+    londonHighSweepBar := na
+    londonLowSweepBar  := na
+    tempLondonHigh := na
+    tempLondonLow  := na
+    pdhSweepBar := na
+    pdlSweepBar := na
 
     longSetupActive := false
     shortSetupActive := false
@@ -226,9 +365,13 @@ floorToStep(x, step) =>
 canArmSetup =
      is5m and barClosed and inRTH and inEntryWin and orbReady and not hasTradedToday and not isExcludedDate and strategy.position_size == 0 and not (longSetupActive or shortSetupActive)
 
+// Sweep invalidation: a recent high sweep invalidates longs, a recent low sweep invalidates shorts
+longSweepInvalidated  = recentHighSwept(sweepInvalidationBars)
+shortSweepInvalidated = recentLowSwept(sweepInvalidationBars)
+
 // long setup arm
 // fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
-if canArmSetup and not longFirstFvgFound and longFVG
+if canArmSetup and not longFirstFvgFound and longFVG and not longSweepInvalidated
     // sl = low of the "before" candle (bar [2]) for wider stop
     rawStop = low[2]
     entry   = longFvgTop  // enter at top of fvg (after candle low)
@@ -257,7 +400,7 @@ if canArmSetup and not longFirstFvgFound and longFVG
 
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
-if canArmSetup and not shortFirstFvgFound and shortFVG
+if canArmSetup and not shortFirstFvgFound and shortFVG and not shortSweepInvalidated
     // sl = high of the "before" candle (bar [2]) for wider stop
     rawStop = high[2]
     entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
@@ -333,34 +476,34 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 
 // ----------------------------------------------------------------------------------------
 // exit orders - unified approach with hard dollar stop
-// calculate effective stop based on position size to guarantee max loss = riskUsd
+// single contract: skip TP1, use BE stop after tp1 level reached, exit at TP2
+// multi contract: partial exit at TP1, then BE stop for remainder
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    // use actual fill price for BE stop, +1 point to cover commission and ensure profit
-    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + 1.0
-    // for partial exit before tp1, use original stop
-    strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    // use actual fill price for BE stop, +offset to cover commission and ensure profit
+    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + beOffset
     finalStop = longBEActive ? beStopPrice : longStopStored
-    strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
+
+    if longSingleContract
+        // single contract: no partial TP, just BE stop after tp1 level + full TP2
+        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
+    else
+        // multi contract: partial exit at TP1, then BE for remainder
+        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    // use actual fill price for BE stop, -1 point to cover commission and ensure profit
-    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - 1.0
-    // for partial exit before tp1, use original stop
-    strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    // use actual fill price for BE stop, -offset to cover commission and ensure profit
+    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - beOffset
     finalStop = shortBEActive ? beStopPrice : shortStopStored
-    strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
-// also maintain exits for pending orders (before fill, only after setup bar)
-if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
-    if longSetupActive and bar_index > longSetupBar
-        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-        strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
-    if shortSetupActive and bar_index > shortSetupBar
+    if shortSingleContract
+        // single contract: no partial TP, just BE stop after tp1 level + full TP2
+        strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
+    else
+        // multi contract: partial exit at TP1, then BE for remainder
         strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-        strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
+        strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
 
 // ----------------------------------------------------------------------------------------
 // Cancel pending orders after cutoff and after RTH
